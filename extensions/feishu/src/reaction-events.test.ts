@@ -133,16 +133,17 @@ describe("handleFeishuReactionEvent", () => {
     expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
   });
 
-  it("uses namespaced dedup key with reaction prefix", async () => {
+  it("includes action_time in dedup key for add/remove/add cycles", async () => {
+    const event = makeReactionEvent({ action_time: "1700000001" });
     await handleFeishuReactionEvent({
       cfg: makeBaseCfg(),
-      event: makeReactionEvent(),
+      event,
       action: "added",
       runtime: createRuntimeEnv(),
     });
 
     expect(mockTryRecordMessagePersistent).toHaveBeenCalledWith(
-      "reaction:added:om_test_msg:ou_user_123:THUMBSUP",
+      "reaction:added:om_test_msg:ou_user_123:THUMBSUP:1700000001",
       expect.any(String),
       expect.anything(),
     );
@@ -260,5 +261,90 @@ describe("handleFeishuReactionEvent", () => {
         peer: { kind: "group", id: "oc_test_chat" },
       }),
     );
+  });
+
+  it("blocks DM reaction from unauthorized sender when dmPolicy is pairing", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_dm_msg",
+      chatId: "oc_dm_chat",
+      chatType: "p2p",
+      content: "hi",
+      contentType: "text",
+    });
+
+    const cfg = makeBaseCfg({
+      channels: {
+        feishu: { dmPolicy: "pairing", allowFrom: ["ou_allowed_user"] },
+      },
+    } as Partial<ClawdbotConfig>);
+
+    const runtime = createRuntimeEnv();
+    await handleFeishuReactionEvent({
+      cfg,
+      event: makeReactionEvent({ user_id: { open_id: "ou_stranger" } }),
+      action: "added",
+      runtime,
+    });
+
+    expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
+    expect(runtime.log).toHaveBeenCalledWith(expect.stringContaining("unauthorized DM sender"));
+  });
+
+  it("allows DM reaction when dmPolicy is open", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_dm_msg",
+      chatId: "oc_dm_chat",
+      chatType: "p2p",
+      content: "hi",
+      contentType: "text",
+    });
+
+    const cfg = makeBaseCfg({
+      channels: { feishu: { dmPolicy: "open" } },
+    } as Partial<ClawdbotConfig>);
+
+    await handleFeishuReactionEvent({
+      cfg,
+      event: makeReactionEvent(),
+      action: "added",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches sender by user_id in group sender allowlist", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_test_msg",
+      chatId: "oc_test_chat",
+      chatType: "group",
+      content: "hello",
+      contentType: "text",
+    });
+
+    const cfg = makeBaseCfg({
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          groups: {
+            oc_test_chat: { allowFrom: ["uid_allowed"] },
+          },
+        },
+      },
+    } as Partial<ClawdbotConfig>);
+
+    // open_id won't match, but user_id should
+    const event = makeReactionEvent({
+      user_id: { open_id: "ou_unknown", user_id: "uid_allowed" },
+    });
+
+    await handleFeishuReactionEvent({
+      cfg,
+      event,
+      action: "added",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
   });
 });

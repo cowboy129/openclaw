@@ -6,7 +6,11 @@ import {
 } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { tryRecordMessagePersistent } from "./dedup.js";
-import { isFeishuGroupAllowed, resolveFeishuGroupConfig } from "./policy.js";
+import {
+  isFeishuGroupAllowed,
+  resolveFeishuAllowlistMatch,
+  resolveFeishuGroupConfig,
+} from "./policy.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, type FeishuMessageInfo } from "./send.js";
 import type { FeishuConfig } from "./types.js";
@@ -75,8 +79,9 @@ export async function handleFeishuReactionEvent(params: {
     return;
   }
 
-  // 2. Dedup — use a namespaced key so reaction events don't collide with message dedup.
-  const dedupKey = `reaction:${action}:${messageId}:${userOpenId}:${emoji}`;
+  // 2. Dedup — include action_time so add→remove→add cycles are not collapsed.
+  const actionTime = event.action_time ?? "";
+  const dedupKey = `reaction:${action}:${messageId}:${userOpenId}:${emoji}:${actionTime}`;
   if (!(await tryRecordMessagePersistent(dedupKey, account.accountId, log))) {
     return;
   }
@@ -132,15 +137,31 @@ export async function handleFeishuReactionEvent(params: {
     const groupConfig = resolveFeishuGroupConfig({ cfg: feishuCfg, groupId: chatId });
     const senderAllowFrom = groupConfig?.allowFrom ?? [];
     if (senderAllowFrom.length > 0) {
-      const senderAllowed = isFeishuGroupAllowed({
-        groupPolicy: "allowlist",
+      const senderAllowed = resolveFeishuAllowlistMatch({
         allowFrom: senderAllowFrom,
         senderId: userOpenId,
-        senderName: undefined,
-      });
+        senderIds: [event.user_id.user_id],
+      }).allowed;
       if (!senderAllowed) {
         log(
           `feishu[${account.accountId}]: reaction sender ${userOpenId} not in group sender allowlist`,
+        );
+        return;
+      }
+    }
+  } else {
+    // DM policy check — block unauthorized senders (mirrors bot.ts DM handling).
+    const dmPolicy = feishuCfg?.dmPolicy ?? "pairing";
+    if (dmPolicy !== "open") {
+      const configAllowFrom = feishuCfg?.allowFrom ?? [];
+      const dmAllowed = resolveFeishuAllowlistMatch({
+        allowFrom: configAllowFrom,
+        senderId: userOpenId,
+        senderIds: [event.user_id.user_id],
+      }).allowed;
+      if (!dmAllowed) {
+        log(
+          `feishu[${account.accountId}]: reaction from unauthorized DM sender ${userOpenId}, skipping`,
         );
         return;
       }
