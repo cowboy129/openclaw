@@ -1,5 +1,6 @@
 import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
 import {
+  createScopedPairingAccess,
   resolveOpenProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
   warnMissingProviderGroupPolicyFallbackOnce,
@@ -51,7 +52,9 @@ async function getCachedMessageInfo(params: {
   }
 
   const info = await getMessageFeishu(params);
-  messageInfoCache.set(cacheKey, { info, expireAt: now + MESSAGE_CACHE_TTL_MS });
+  if (info) {
+    messageInfoCache.set(cacheKey, { info, expireAt: now + MESSAGE_CACHE_TTL_MS });
+  }
   return info;
 }
 
@@ -106,7 +109,8 @@ export async function handleFeishuReactionEvent(params: {
     return;
   }
 
-  // 4. Group policy check — only for group chats, DMs skip (same as bot.ts message handling).
+  // 4. Policy checks.
+  const core = getFeishuRuntime();
   const isGroup = msgInfo.chatType === "group";
   if (isGroup) {
     const defaultGroupPolicy = resolveDefaultGroupPolicy(cfg);
@@ -155,8 +159,16 @@ export async function handleFeishuReactionEvent(params: {
     const dmPolicy = feishuCfg?.dmPolicy ?? "pairing";
     if (dmPolicy !== "open") {
       const configAllowFrom = feishuCfg?.allowFrom ?? [];
+      const pairing = createScopedPairingAccess({
+        core,
+        channel: "feishu",
+        accountId: account.accountId,
+      });
+      const storeAllowFrom =
+        dmPolicy !== "allowlist" ? await pairing.readAllowFromStore().catch(() => []) : [];
+      const effectiveDmAllowFrom = [...configAllowFrom, ...storeAllowFrom];
       const dmAllowed = resolveFeishuAllowlistMatch({
-        allowFrom: configAllowFrom,
+        allowFrom: effectiveDmAllowFrom,
         senderId: userOpenId,
         senderIds: [event.user_id.user_id],
       }).allowed;
@@ -170,7 +182,6 @@ export async function handleFeishuReactionEvent(params: {
   }
 
   // 5. Resolve agent route.
-  const core = getFeishuRuntime();
   const peerId = isGroup ? chatId : userOpenId;
   const route = core.channel.routing.resolveAgentRoute({
     cfg,
@@ -190,7 +201,7 @@ export async function handleFeishuReactionEvent(params: {
 
   // Build a lightweight inbound body for the agent.
   const body = `[System: reaction ${action} :${emoji}: by ${userOpenId} on message ${messageId} ("${preview}")]`;
-  const feishuTo = `feishu:${account.accountId}:${chatId}`;
+  const feishuTo = isGroup ? `chat:${chatId}` : `user:${userOpenId}`;
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
     Body: body,

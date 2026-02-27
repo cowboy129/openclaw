@@ -7,16 +7,21 @@ import {
 } from "./reaction-events.js";
 import { setFeishuRuntime } from "./runtime.js";
 
-const { mockGetMessageFeishu, mockTryRecordMessagePersistent, mockCreateFeishuReplyDispatcher } =
-  vi.hoisted(() => ({
-    mockGetMessageFeishu: vi.fn(),
-    mockTryRecordMessagePersistent: vi.fn(),
-    mockCreateFeishuReplyDispatcher: vi.fn(() => ({
-      dispatcher: vi.fn(),
-      replyOptions: {},
-      markDispatchIdle: vi.fn(),
-    })),
-  }));
+const {
+  mockGetMessageFeishu,
+  mockTryRecordMessagePersistent,
+  mockCreateFeishuReplyDispatcher,
+  mockReadAllowFromStore,
+} = vi.hoisted(() => ({
+  mockGetMessageFeishu: vi.fn(),
+  mockTryRecordMessagePersistent: vi.fn(),
+  mockCreateFeishuReplyDispatcher: vi.fn(() => ({
+    dispatcher: vi.fn(),
+    replyOptions: {},
+    markDispatchIdle: vi.fn(),
+  })),
+  mockReadAllowFromStore: vi.fn(() => Promise.resolve([])),
+}));
 
 vi.mock("./send.js", () => ({
   getMessageFeishu: mockGetMessageFeishu,
@@ -33,6 +38,16 @@ vi.mock("./reply-dispatcher.js", () => ({
 vi.mock("./client.js", () => ({
   createFeishuClient: vi.fn(),
 }));
+
+vi.mock("openclaw/plugin-sdk", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    createScopedPairingAccess: vi.fn(() => ({
+      readAllowFromStore: mockReadAllowFromStore,
+    })),
+  };
+});
 
 function createRuntimeEnv(): RuntimeEnv {
   return {
@@ -344,6 +359,56 @@ describe("handleFeishuReactionEvent", () => {
     });
 
     expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows DM reaction from paired user when dmPolicy is pairing", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_dm_msg",
+      chatId: "oc_dm_chat",
+      chatType: "p2p",
+      content: "hi",
+      contentType: "text",
+    });
+
+    const cfg = makeBaseCfg({
+      channels: { feishu: { dmPolicy: "pairing" } },
+    } as Partial<ClawdbotConfig>);
+
+    // Pairing store returns this user as approved
+    mockReadAllowFromStore.mockResolvedValueOnce(["ou_paired_user"]);
+
+    await handleFeishuReactionEvent({
+      cfg,
+      event: makeReactionEvent({ user_id: { open_id: "ou_paired_user" } }),
+      action: "added",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read pairing store when dmPolicy is allowlist", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_dm_msg",
+      chatId: "oc_dm_chat",
+      chatType: "p2p",
+      content: "hi",
+      contentType: "text",
+    });
+
+    const cfg = makeBaseCfg({
+      channels: { feishu: { dmPolicy: "allowlist", allowFrom: ["ou_allowed"] } },
+    } as Partial<ClawdbotConfig>);
+
+    await handleFeishuReactionEvent({
+      cfg,
+      event: makeReactionEvent({ user_id: { open_id: "ou_stranger" } }),
+      action: "added",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockReadAllowFromStore).not.toHaveBeenCalled();
+    expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
   });
 
   it("matches sender by user_id in group sender allowlist", async () => {
