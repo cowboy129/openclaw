@@ -7,10 +7,16 @@ import {
 } from "./reaction-events.js";
 import { setFeishuRuntime } from "./runtime.js";
 
-const { mockGetMessageFeishu, mockTryRecordMessagePersistent } = vi.hoisted(() => ({
-  mockGetMessageFeishu: vi.fn(),
-  mockTryRecordMessagePersistent: vi.fn(),
-}));
+const { mockGetMessageFeishu, mockTryRecordMessagePersistent, mockCreateFeishuReplyDispatcher } =
+  vi.hoisted(() => ({
+    mockGetMessageFeishu: vi.fn(),
+    mockTryRecordMessagePersistent: vi.fn(),
+    mockCreateFeishuReplyDispatcher: vi.fn(() => ({
+      dispatcher: vi.fn(),
+      replyOptions: {},
+      markDispatchIdle: vi.fn(),
+    })),
+  }));
 
 vi.mock("./send.js", () => ({
   getMessageFeishu: mockGetMessageFeishu,
@@ -18,6 +24,10 @@ vi.mock("./send.js", () => ({
 
 vi.mock("./dedup.js", () => ({
   tryRecordMessagePersistent: mockTryRecordMessagePersistent,
+}));
+
+vi.mock("./reply-dispatcher.js", () => ({
+  createFeishuReplyDispatcher: mockCreateFeishuReplyDispatcher,
 }));
 
 vi.mock("./client.js", () => ({
@@ -57,6 +67,19 @@ function makeBaseCfg(overrides: Partial<ClawdbotConfig> = {}): ClawdbotConfig {
 
 describe("handleFeishuReactionEvent", () => {
   const mockEnqueueSystemEvent = vi.fn();
+  const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
+  const mockDispatchReplyFromConfig = vi
+    .fn()
+    .mockResolvedValue({ queuedFinal: false, counts: { final: 0 } });
+  const mockWithReplyDispatcher = vi.fn(
+    async ({ run, onSettled }: { run: () => Promise<unknown>; onSettled?: () => void }) => {
+      try {
+        return await run();
+      } finally {
+        onSettled?.();
+      }
+    },
+  );
   const mockResolveAgentRoute = vi.fn(() => ({
     agentId: "main",
     accountId: "default",
@@ -86,6 +109,11 @@ describe("handleFeishuReactionEvent", () => {
       channel: {
         routing: {
           resolveAgentRoute: mockResolveAgentRoute,
+        },
+        reply: {
+          finalizeInboundContext: mockFinalizeInboundContext,
+          dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+          withReplyDispatcher: mockWithReplyDispatcher,
         },
       },
     } as unknown as PluginRuntime);
@@ -198,7 +226,7 @@ describe("handleFeishuReactionEvent", () => {
     expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
   });
 
-  it("dispatches system event with correct text format for added reaction", async () => {
+  it("enqueues system event and dispatches to agent for added reaction", async () => {
     await handleFeishuReactionEvent({
       cfg: makeBaseCfg(),
       event: makeReactionEvent(),
@@ -206,6 +234,7 @@ describe("handleFeishuReactionEvent", () => {
       runtime: createRuntimeEnv(),
     });
 
+    // System event is enqueued
     expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
     const [text, options] = mockEnqueueSystemEvent.mock.calls[0];
     expect(text).toContain("reaction added");
@@ -215,6 +244,10 @@ describe("handleFeishuReactionEvent", () => {
     expect(text).toContain("hello world");
     expect(options.sessionKey).toBe("agent:main:feishu:group:oc_test_chat");
     expect(options.contextKey).toContain("feishu:reaction:added:");
+
+    // Agent dispatch is triggered
+    expect(mockWithReplyDispatcher).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches system event for removed reaction", async () => {

@@ -11,6 +11,7 @@ import {
   resolveFeishuAllowlistMatch,
   resolveFeishuGroupConfig,
 } from "./policy.js";
+import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, type FeishuMessageInfo } from "./send.js";
 import type { FeishuConfig } from "./types.js";
@@ -178,18 +179,68 @@ export async function handleFeishuReactionEvent(params: {
     peer: { kind: isGroup ? "group" : "direct", id: peerId },
   });
 
-  // 6. Build event text and dispatch system event.
+  // 6. Enqueue system event and dispatch to agent so it can decide whether to reply.
   const preview = (msgInfo.content ?? "").replace(/\s+/g, " ").slice(0, 80);
-  const text = `Feishu[${account.accountId}] reaction ${action}: :${emoji}: by ${userOpenId} on msg ${messageId} ("${preview}")`;
+  const eventText = `Feishu[${account.accountId}] reaction ${action}: :${emoji}: by ${userOpenId} on msg ${messageId} ("${preview}")`;
 
-  core.system.enqueueSystemEvent(text, {
+  core.system.enqueueSystemEvent(eventText, {
     sessionKey: route.sessionKey,
     contextKey: `feishu:reaction:${action}:${messageId}:${userOpenId}:${emoji}`,
   });
 
+  // Build a lightweight inbound body for the agent.
+  const body = `[System: reaction ${action} :${emoji}: by ${userOpenId} on message ${messageId} ("${preview}")]`;
+  const feishuTo = `feishu:${account.accountId}:${chatId}`;
+
+  const ctxPayload = core.channel.reply.finalizeInboundContext({
+    Body: body,
+    BodyForAgent: body,
+    RawBody: body,
+    CommandBody: body,
+    From: `feishu:${userOpenId}`,
+    To: feishuTo,
+    SessionKey: route.sessionKey,
+    AccountId: route.accountId,
+    ChatType: isGroup ? "group" : "direct",
+    GroupSubject: isGroup ? chatId : undefined,
+    SenderName: userOpenId,
+    SenderId: userOpenId,
+    Provider: "feishu" as const,
+    Surface: "feishu" as const,
+    MessageSid: `reaction:${messageId}:${actionTime}`,
+    Timestamp: Date.now(),
+    WasMentioned: false,
+    CommandAuthorized: false,
+    OriginatingChannel: "feishu" as const,
+    OriginatingTo: feishuTo,
+  });
+
+  const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
+    cfg,
+    agentId: route.agentId,
+    runtime: runtime as RuntimeEnv,
+    chatId,
+    replyToMessageId: messageId,
+    accountId: account.accountId,
+  });
+
   log(
-    `feishu[${account.accountId}]: reaction ${action} :${emoji}: by ${userOpenId} on ${messageId}`,
+    `feishu[${account.accountId}]: reaction ${action} :${emoji}: by ${userOpenId} on ${messageId}, dispatching to agent`,
   );
+
+  await core.channel.reply.withReplyDispatcher({
+    dispatcher,
+    onSettled: () => {
+      markDispatchIdle();
+    },
+    run: () =>
+      core.channel.reply.dispatchReplyFromConfig({
+        ctx: ctxPayload,
+        cfg,
+        dispatcher,
+        replyOptions,
+      }),
+  });
 }
 
 /** Exported for testing only. */
