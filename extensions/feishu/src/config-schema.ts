@@ -110,6 +110,7 @@ const GroupSessionScopeSchema = z
  * - "enabled": Messages in different topics get separate sessions
  */
 const TopicSessionModeSchema = z.enum(["disabled", "enabled"]).optional();
+const ReactionNotificationModeSchema = z.enum(["off", "own", "all"]).optional();
 
 /**
  * Reply-in-thread mode for group chats.
@@ -159,6 +160,7 @@ const FeishuSharedConfigShape = {
   streaming: StreamingModeSchema,
   tools: FeishuToolsConfigSchema,
   replyInThread: ReplyInThreadSchema,
+  reactionNotifications: ReactionNotificationModeSchema,
 };
 
 /**
@@ -199,6 +201,7 @@ export const FeishuConfigSchema = z
     requireMention: z.boolean().optional().default(true),
     groupSessionScope: GroupSessionScopeSchema,
     topicSessionMode: TopicSessionModeSchema,
+    reactionNotifications: ReactionNotificationModeSchema.optional().default("own"),
     // Dynamic agent creation for DM users
     dynamicAgentCreation: DynamicAgentCreationSchema,
     // Multi-account configuration

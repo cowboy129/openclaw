@@ -125,6 +125,20 @@ export async function handleFeishuReactionEvent(params: {
     return;
   }
 
+  const reactionMode = feishuCfg?.reactionNotifications ?? "own";
+  if (reactionMode === "off") {
+    return;
+  }
+  if (reactionMode === "own" && botOpenId) {
+    const messageSenderOpenId = msgInfo.senderOpenId ?? "";
+    if (!messageSenderOpenId || messageSenderOpenId !== botOpenId) {
+      log(
+        `feishu[${account.accountId}]: reaction mode=own and message ${messageId} is not bot-authored, skipping`,
+      );
+      return;
+    }
+  }
+
   // 4. Policy checks.
   const core = getFeishuRuntime();
   const isGroup = msgInfo.chatType === "group";

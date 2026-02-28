@@ -74,6 +74,7 @@ function makeBaseCfg(overrides: Partial<ClawdbotConfig> = {}): ClawdbotConfig {
     channels: {
       feishu: {
         groupPolicy: "open",
+        reactionNotifications: "all",
       },
     },
     ...overrides,
@@ -174,6 +175,69 @@ describe("handleFeishuReactionEvent", () => {
 
     expect(mockTryRecordMessagePersistent).toHaveBeenCalled();
     expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("skips reaction events when reactionNotifications is off", async () => {
+    await handleFeishuReactionEvent({
+      cfg: makeBaseCfg({
+        channels: { feishu: { groupPolicy: "open", reactionNotifications: "off" } },
+      } as Partial<ClawdbotConfig>),
+      event: makeReactionEvent(),
+      action: "added",
+      botOpenId: "ou_bot_self",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
+    expect(mockWithReplyDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("defaults reactionNotifications to own and skips non-bot-authored messages", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_test_msg",
+      chatId: "oc_test_chat",
+      chatType: "group",
+      senderOpenId: "ou_other_sender",
+      content: "hello world",
+      contentType: "text",
+    });
+
+    await handleFeishuReactionEvent({
+      cfg: makeBaseCfg({
+        channels: { feishu: { groupPolicy: "open" } },
+      } as Partial<ClawdbotConfig>),
+      event: makeReactionEvent(),
+      action: "added",
+      botOpenId: "ou_bot_self",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).not.toHaveBeenCalled();
+    expect(mockWithReplyDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("allows own-mode reaction when target message was sent by the bot", async () => {
+    mockGetMessageFeishu.mockResolvedValue({
+      messageId: "om_test_msg",
+      chatId: "oc_test_chat",
+      chatType: "group",
+      senderOpenId: "ou_bot_self",
+      content: "hello world",
+      contentType: "text",
+    });
+
+    await handleFeishuReactionEvent({
+      cfg: makeBaseCfg({
+        channels: { feishu: { groupPolicy: "open" } },
+      } as Partial<ClawdbotConfig>),
+      event: makeReactionEvent(),
+      action: "added",
+      botOpenId: "ou_bot_self",
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(mockEnqueueSystemEvent).toHaveBeenCalledTimes(1);
+    expect(mockWithReplyDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("includes action_time in dedup key for add/remove/add cycles", async () => {
